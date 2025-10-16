@@ -4,8 +4,7 @@ Hestia — S&P 500 Dip Buyer (Full Alpaca Automation, IEX-only, no Telegram)
 Changes for IEX-only:
   • Historical bars now ALWAYS use DataFeed.IEX (no SIP fallback).
   • Introduced FEED = DataFeed.IEX and used it in fetch_15m().
-
-Other behavior unchanged.
+  • load_sp500() now pulls from GitHub instead of Wikipedia.
 """
 from __future__ import annotations
 import os, json, time
@@ -61,31 +60,39 @@ stock_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 trading = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=ALPACA_PAPER)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Universe
+# Universe (GitHub-backed S&P 500 list)
 # ──────────────────────────────────────────────────────────────────────────────
 FALLBACK_SP500 = [
     "AAPL","MSFT","AMZN","GOOGL","META","NVDA","JPM","AVGO","UNH","XOM","SPY"
 ]
 
+GITHUB_SP500_URLS = [
+    "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/refs/heads/main/data/constituents.csv",
+    "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
+]
+
 def load_sp500() -> List[str]:
-    """Fetch S&P 500 symbols dynamically (no CSV). Falls back to small static list on error."""
-    try:
-        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
-        df = tables[0]
-        col = [c for c in df.columns if str(c).lower().startswith("symbol")][0]
-        syms = (
-            df[col]
-            .dropna()
-            .astype(str)
-            .str.upper()
-            .str.replace(".", "-", regex=False)  # BRK.B -> BRK-B
-            .unique()
-            .tolist()
-        )
-        return sorted(syms)
-    except Exception as e:
-        print(f"[WARN] load_sp500 fell back to static list: {e}")
-        return FALLBACK_SP500
+    """Fetch S&P 500 symbols from a maintained GitHub CSV. Falls back to a static list on error."""
+    for url in GITHUB_SP500_URLS:
+        try:
+            df = pd.read_csv(url)
+            sym_col = [c for c in df.columns if str(c).strip().lower() in {"symbol","ticker","tickers"}][0]
+            syms = (
+                df[sym_col]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .str.replace(".", "-", regex=False)
+            )
+            syms = syms[syms.str.fullmatch(r"[A-Z0-9.-]{1,8}")].unique().tolist()
+            if "SPY" not in syms:
+                syms.append("SPY")
+            return sorted(set(syms))
+        except Exception as e:
+            print(f"[WARN] load_sp500: failed {url}: {e}")
+    print("[WARN] load_sp500 fell back to static list.")
+    return FALLBACK_SP500
 
 # ──────────────────────────────────────────────────────────────────────────────
 # State
@@ -96,7 +103,7 @@ def load_state() -> Dict[str,Any]:
             return json.loads(STATE_PATH.read_text())
     except Exception:
         pass
-    return {"positions": {}}  # keyed by symbol
+    return {"positions": {}}
 
 def save_state(state: Dict[str,Any]):
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -127,7 +134,7 @@ def to_df_from_response(resp, symbol: str) -> pd.DataFrame:
             except Exception:
                 pass
         df = df.reset_index().rename(columns={
-            "timestamp": "t", "open": "o", "high": "h", "low": "l", "close": "c", "volume": "v"
+            "timestamp": "t","open": "o","high": "h","low": "l","close": "c","volume": "v"
         })
         keep = ["t","o","h","l","c","v"]
         return df[keep].sort_values("t").reset_index(drop=True)
@@ -141,7 +148,7 @@ def fetch_15m(symbol: str, end: datetime) -> pd.DataFrame:
         start=start,
         end=end,
         adjustment=Adjustment.SPLIT,
-        feed=FEED,                     # <- IEX only
+        feed=FEED,                     # IEX only
         limit=10000,
     )
     resp = stock_client.get_stock_bars(req)
@@ -232,7 +239,6 @@ def scan_and_trade():
             print(f"[ERROR] {sym} scan/trade failed: {e}")
 
 def manage_positions():
-    # With server-side brackets, TP/SL handled by Alpaca. Here we prune closed.
     try:
         positions = {p.symbol: p for p in trading.get_all_positions()}
         for sym in list(state["positions"].keys()):
