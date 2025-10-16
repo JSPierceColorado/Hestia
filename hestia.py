@@ -1,34 +1,11 @@
 """
-Hestia — S&P 500 Dip Buyer (Full Alpaca Automation, no Telegram)
+Hestia — S&P 500 Dip Buyer (Full Alpaca Automation, IEX-only, no Telegram)
 
-Philosophy:
-  • Scan S&P 500 on 15m bars. Buy oversold dips (RSI<=30 and SMA60<SMA240).
-  • Place bracket orders with TP/SL immediately; no timeout.
-  • Each new position uses 10% of CURRENT buying power (by notional).
-  • No max positions, no sector caps.
+Changes for IEX-only:
+  • Historical bars now ALWAYS use DataFeed.IEX (no SIP fallback).
+  • Introduced FEED = DataFeed.IEX and used it in fetch_15m().
 
-Notes:
-  • No CSV. S&P 500 symbols are fetched dynamically from Wikipedia.
-  • Uses Alpaca Market Data v2 + Trading API.
-  • Fractional shares enabled via notional sizing (set ALLOW_FRACTIONAL=true).
-
-Env vars:
-  ALPACA_API_KEY=...
-  ALPACA_SECRET_KEY=...
-  ALPACA_PAPER=true|false
-
-  # Risk controls / sizing
-  ALLOW_FRACTIONAL=true|false         # if false, uses share qty instead of notional
-  NOTIONAL_PCT_PER_TRADE=10           # 10% of current buying power
-  TP_PCT=8                            # +8% take-profit
-  SL_PCT=5                            # -5% stop-loss
-
-  # Scanner cadence
-  SCAN_SECONDS=900                    # 15 minutes
-  MANAGE_SECONDS=60                   # 1 minute for housekeeping
-
-  # State path for persistence
-  STATE_PATH=/mnt/data/hestia_state.json
+Other behavior unchanged.
 """
 from __future__ import annotations
 import os, json, time
@@ -70,6 +47,9 @@ TIMEFRAME = TimeFrame(15, TimeFrameUnit.Minute)
 LOOKBACK_DAYS_STOCK = 30
 
 BOT_TAG = "HESTIA"
+
+# Force IEX for all market data calls
+FEED = DataFeed.IEX
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Clients
@@ -161,7 +141,7 @@ def fetch_15m(symbol: str, end: datetime) -> pd.DataFrame:
         start=start,
         end=end,
         adjustment=Adjustment.SPLIT,
-        feed=DataFeed.IEX if ALPACA_PAPER else DataFeed.SIP,
+        feed=FEED,                     # <- IEX only
         limit=10000,
     )
     resp = stock_client.get_stock_bars(req)
